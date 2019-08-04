@@ -44,28 +44,9 @@ inline void __cudaCheckError(const char *file, const int line) {
   return;
 }
 
-namespace jax{
-  struct IllegalUnityTransition{
-    std::string msg;
-    IllegalUnityTransition(){
-      msg = "Illegal Unity memory transfer";
-    }
-    IllegalUnityTransition(std::string msg) : msg("Illegal Unity memory transfer: " + msg){}
-    virtual const char* what() const throw(){
-      return msg.c_str();
-    }
-  };
+//TODO go back and make sure that fore is being set properly
 
-  struct NullUnityException{
-    std::string msg;
-    NullUnityException(){
-      msg = "Illegal attempt to use null set Unity";
-    }
-    NullUnityException(std::string msg) : msg("Illegal attempt to use null set Unity: " + msg){}
-    virtual const char* what() const throw(){
-      return msg.c_str();
-    }
-  };
+namespace jax{
 
   typedef enum MemoryState{
     null = 0,
@@ -74,6 +55,56 @@ namespace jax{
     both = 3,
     pinned = 4
   } MemoryState;
+
+  namespace{
+    struct UnityException{
+      std::string msg;
+      UnityException(){
+        msg = "Unknown Unity Exception";
+      }
+      UnityException(std::string msg) : msg("Unity Exception: " + msg){}
+      virtual const char* what() const throw(){
+        return msg.c_str();
+      }
+    };
+    struct IllegalUnityTransition : public UnityException{
+      std::string msg;
+      IllegalUnityTransition(){
+        msg = "Illegal Unity memory transfer";
+      }
+      IllegalUnityTransition(std::string msg) : msg("Illegal Unity memory transfer: " + msg){}
+      virtual const char* what() const throw(){
+        return msg.c_str();
+      }
+    };
+
+    struct NullUnityException : public UnityException{
+      std::string msg;
+      NullUnityException(){
+        msg = "Illegal attempt to use null set Unity";
+      }
+      NullUnityException(std::string msg) : msg("Illegal attempt to use null set Unity: " + msg){}
+      virtual const char* what() const throw(){
+        return msg.c_str();
+      }
+    };
+
+    inline std::string memoryStateToString(MemoryState state){
+      switch(state){
+        case null:
+          return "null";
+        case cpu:
+          return "cpu";
+        case gpu:
+          return "gpu";
+        case both:
+          return "both cpu & gpu";
+        default:
+          std::cerr<<"ERROR: unknown MemoryState when calling memoryStateToString()"<<std::endl;
+          exit(-1);
+      }
+    }
+  }
 
   template<typename T>
   class Unity{
@@ -90,12 +121,10 @@ namespace jax{
     Unity(T* data, unsigned long numElements, MemoryState state);
     ~Unity();
 
+    void clear(MemoryState state = both);//hard clear
+    void transferMemoryTo(MemoryState state);//soft set - no deletes
+    void setMemoryState(MemoryState state);
     void setData(T* data, unsigned long numElements, MemoryState state);//hard set
-    void setMemoryState(MemoryState state);//hard set
-    void clear();//hard clear
-    void transferMemoryTo(MemoryState state);//soft set
-    void clearHost();//hard clear
-    void clearDevice();//hard clear
   };
 
   template<typename T>
@@ -124,64 +153,19 @@ namespace jax{
   }
 
   template<typename T>
-  void Unity<T>::setData(T* data, unsigned long numElements, MemoryState state){
-    this->clear();
-    this->state = state;
-    this->fore = state;
-    this->numElements = numElements;
-    if(state == cpu) this->host = data;
-    else if(state == gpu) this->device = data;
-    else{
-      throw IllegalUnityTransition("cannot instantiate memory on device and host with only one pointer");
+  void Unity<T>::clear(MemoryState state){
+    if(state == null){
+      std::cerr<<"WARNING: Unity<T>::clear(jax::null) does nothing"<<std::endl;
+      return;
     }
-  }
-  template<typename T>
-  void Unity<T>::setMemoryState(MemoryState state){
-    if((this->state == null || this->numElements == 0) && state != null){
-      throw NullUnityException();
+    else if(state != both && this->state != both && this->state != state){
+      std::cerr<<"WARNING: Attempt to clear null memory in location "
+      <<memoryStateToString(state)<<"...action prevented"<<std::endl;
+      return;
     }
-    else if(this->state == state) return;
-    else if(state == null) this->clear();
-    else if(state == both){
-      if(this->state == cpu){
-        if(this->device == nullptr){
-          CudaSafeCall(cudaMalloc((void**)&this->device, sizeof(T)*this->numElements));
-        }
-        CudaSafeCall(cudaMemcpy(this->device,this->host, sizeof(T)*this->numElements, cudaMemcpyHostToDevice));
-      }
-      if(this->state == gpu){
-        if(this->host == nullptr){
-          this->host = new T[this->numElements];
-        }
-        CudaSafeCall(cudaMemcpy(this->host, this->device, sizeof(T)*this->numElements, cudaMemcpyDeviceToHost));
-      }
-    }
-    else if(state == gpu){
-      if(this->device == nullptr){
-        CudaSafeCall(cudaMalloc((void**)&this->device, sizeof(T)*this->numElements));
-      }
-      CudaSafeCall(cudaMemcpy(this->device,this->host, sizeof(T)*this->numElements, cudaMemcpyHostToDevice));
-      delete[] this->host;
-      this->host = nullptr;
-    }
-    else if(state == cpu){
-      if(this->host == nullptr){
-        this->host = new T[this->numElements];
-      }
-      CudaSafeCall(cudaMemcpy(this->host, this->device, sizeof(T)*this->numElements, cudaMemcpyDeviceToHost));
-      CudaSafeCall(cudaFree(this->device));
-      this->device = nullptr;
-    }
-    else{
-      throw IllegalUnityTransition("unkown memory state");
-    }
-    this->state = state;
-    this->fore = state;
-  }
-  template<typename T>
-  void Unity<T>::clear(){
     switch(this->state){
       case null:
+        std::cerr<<"WARNING: Attempt to clear null (empty) Unity...action prevented"<<std::endl;
         break;
       case cpu:
         if(this->host != nullptr){
@@ -194,11 +178,28 @@ namespace jax{
         }
         break;
       case both:
-        if(host != nullptr){
-          delete[] this->host;
+        if(state != both){
+          if(state == cpu && this->host != nullptr){
+            delete[] this->host;
+            this->host = nullptr;
+            this->state = gpu;
+            this->fore = gpu;
+          }
+          else if(state == gpu && this->device != nullptr){
+            CudaSafeCall(cudaFree(this->device));
+            this->device = nullptr;
+            this->state = cpu;
+            this->fore = cpu;
+          }
+          return;
         }
-        if(device != nullptr){
-          CudaSafeCall(cudaFree(this->device));
+        else{
+          if(host != nullptr){
+            delete[] this->host;
+          }
+          if(device != nullptr){
+            CudaSafeCall(cudaFree(this->device));
+          }
         }
         break;
       default:
@@ -212,79 +213,92 @@ namespace jax{
   }
   template<typename T>
   void Unity<T>::transferMemoryTo(MemoryState state){
-    if((this->state == null || sizeof(T)*this->numElements == 0) && state != null){
-      throw NullUnityException();
+    if(this->state == null || sizeof(T)*this->numElements == 0){
+      throw NullUnityException("thrown in Unity<T>::transferMemoryTo()");
     }
     else if(state == null){
       throw IllegalUnityTransition("Cannot transfer unity memory to null");
     }
-    else if(this->state == state) return;
+    else if(this->state == state){
+      std::cerr<<"WARNING: transfering memory to same location does nothing: "<<memoryStateToString(state)<<std::endl;
+      return;
+    }
     else if(state == both){
-      if(this->state == cpu){
+      if(this->fore == cpu){
         if(this->device == nullptr){
           CudaSafeCall(cudaMalloc((void**)&this->device, sizeof(T)*this->numElements));
         }
         CudaSafeCall(cudaMemcpy(this->device,this->host, sizeof(T)*this->numElements, cudaMemcpyHostToDevice));
       }
-      if(this->state == gpu){
+      else if(this->fore == gpu){
         if(this->host == nullptr){
           this->host = new T[this->numElements];
         }
         CudaSafeCall(cudaMemcpy(this->host, this->device, sizeof(T)*this->numElements, cudaMemcpyDeviceToHost));
       }
-      this->state = both;
-      this->fore = both;
-    }
-    else if(state == gpu){
-      if(this->device == nullptr){
-        CudaSafeCall(cudaMalloc((void**)&this->device, sizeof(T)*this->numElements));
-      }
-      CudaSafeCall(cudaMemcpy(this->device, this->host, sizeof(T)*this->numElements, cudaMemcpyHostToDevice));
-      this->state = both;
-      this->fore = both;
-    }
-    else if(state == cpu){
-      if(this->host == nullptr){
-        this->host = new T[this->numElements];
-      }
-      CudaSafeCall(cudaMemcpy(this->host, this->device, sizeof(T)*this->numElements, cudaMemcpyDeviceToHost));
-      this->state = both;
-      this->fore = both;
     }
     else{
-      throw IllegalUnityTransition("unkown memory state");
+      if(this->fore == state){
+        std::cerr<<"WARNING: most updated memory location is being overwritten: "<<
+        "fore = "<<memoryStateToString(this->fore)<<std::endl;
+      }
+      if(state == gpu){
+        if(this->device == nullptr){
+          CudaSafeCall(cudaMalloc((void**)&this->device, sizeof(T)*this->numElements));
+        }
+        CudaSafeCall(cudaMemcpy(this->device, this->host, sizeof(T)*this->numElements, cudaMemcpyHostToDevice));
+      }
+      else if(state == cpu){
+        if(this->host == nullptr){
+          this->host = new T[this->numElements];
+        }
+        CudaSafeCall(cudaMemcpy(this->host, this->device, sizeof(T)*this->numElements, cudaMemcpyDeviceToHost));
+      }
+      else{
+        throw IllegalUnityTransition("unkown memory state");
+      }
+    }
+    this->state = both;
+  }
+  template<typename T>
+  void Unity<T>::setMemoryState(MemoryState state){
+    if(state == this->state){
+      std::cerr<<"WARNING: hard setting of memory state to same memory state does nothing: "<<memoryStateToString(this->state)<<std::endl;
+    }
+    else if(this->state == null){
+      throw NullUnityException("Cannot setMemoryState of a null Unity");
+    }
+    else if(state == null) this->clear();
+    else if(this->state == both){
+      if(cpu == this->fore){
+        this->transferMemoryTo(gpu);
+      }
+      else{
+        this->transferMemoryTo(cpu);
+      }
+    }
+    else{
+      this->transferMemoryTo(state);
+      if(state == cpu){
+        this->clear(gpu);
+      }
+      else{
+        this->clear(cpu);
+      }
     }
   }
   template<typename T>
-  void Unity<T>::clearHost(){
-    if(this->host != nullptr){
-      operator delete(this->host);
-    }
-    if(this->state == cpu){
-      this->state = null;
-      this->fore = null;
-    }
-    else if(this->state == both){
-      this->state = gpu;
-      this->fore = gpu;
+  void Unity<T>::setData(T* data, unsigned long numElements, MemoryState state){
+    this->clear();
+    this->state = state;
+    this->fore = state;
+    this->numElements = numElements;
+    if(state == cpu) this->host = data;
+    else if(state == gpu) this->device = data;
+    else{
+      throw IllegalUnityTransition("cannot instantiate memory on device and host with only one pointer");
     }
   }
-  template<typename T>
-  void Unity<T>::clearDevice(){
-    if(this->device != nullptr){
-      CudaSafeCall(cudaFree(this->device));
-      this->device = nullptr;
-    }
-    if(this->state == gpu){
-      this->state = null;
-      this->fore = null;
-    }
-    else if(this->state == both){
-      this->state = cpu;
-      this->fore = cpu;
-    }
-  }
-
 }
 
 #endif /*UNITY_CUH*/

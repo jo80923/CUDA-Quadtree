@@ -1,8 +1,11 @@
+/** \file Quadtree.cuh
+ * \brief File contains all things related to CUDA Quadtree.
+*/
 #ifndef QUADTREE_CUH
 #define QUADTREE_CUH
 
 #include "common_includes.h"
-#include "Unity.cuh"
+#include "Image.cuh"
 #include <thrust/sort.h>
 #include <thrust/pair.h>
 #include <thrust/unique.h>
@@ -14,8 +17,12 @@
 #include <thrust/copy.h>
 
 namespace jax{
-
-  //consider putting in util
+  /**
+   * \brief simple struct for holding float2 as location and
+   * data of anytype.
+   * \todo find better place for this struct
+   * \ingroup cuda_util
+  */
   template<typename D>
   struct LocalizedData{
     float2 loc;
@@ -27,8 +34,10 @@ namespace jax{
   //TODO evaluate use of unsigned int or long for index holders
 
 
-  /*
-  BASE QUADTREE CLASS
+  /**
+  * \brief Class that can hold the following classes:
+  * float2, LocalizedData<T>, unsigned int, unsigned char
+  * \ingroup trees
   */
   template<typename T>
   class Quadtree{
@@ -40,6 +49,9 @@ namespace jax{
 
 
   public:
+    /**
+    * \brief Quadtree<T>::Node class for GPU and CPU utilization
+    */
     struct Node{
       int key;
       int dataIndex;
@@ -55,12 +67,18 @@ namespace jax{
 
       __device__ __host__ Node();
     };
+    /**
+    * \brief Quadtree<T>::Vertex class for GPU and CPU utilization
+    */
     struct Vertex{
       float2 loc;
       int nodes[4];
       int depth;
       __device__ __host__ Vertex();
     };
+    /**
+    * \brief Quadtree<T>::Edge class for GPU and CPU utilization
+    */
     struct Edge{
       int2 vertices;
       int nodes[2];
@@ -71,6 +89,7 @@ namespace jax{
     uint2 size;
     int2 border;
     unsigned int depth;
+
 
     jax::Unity<T>* data;
     jax::Unity<Node>* nodes;
@@ -86,18 +105,62 @@ namespace jax{
 
     Quadtree();
 
-    //for full quadtrees only holding data indices
-    //can only be used with Quadtree<unsigned int>()
+    /**
+    * \brief Constructor for quadtree holding pixels of an Image
+    * \param image Image holding pixels
+    * \param depth depth of quadtree
+    * \param border size of border (optional parameter)
+    */
+    Quadtree(Image* image, unsigned int depth, int2 border = {0,0});
+
+    /**
+    * \brief Constructor for full quadtrees holding indices to each pixel
+    * \param size size of image {x,y}
+    * \param depth depth of quadtree
+    * \param border size of border (optional parameter)
+    */
     Quadtree(uint2 size, unsigned int depth, int2 border = {0,0});
+    /**
+    * \brief Constructor for full quadtrees holding actual data
+    * \param size size of image {x,y}
+    * \param depth depth of quadtree
+    * \param data of type T
+    * \param border size of border (optional parameter)
+    */
     Quadtree(uint2 size, unsigned int depth, jax::Unity<T>* data, unsigned int colorDepth = 0, int2 border = {0,0});
     //generally not necessary and takes up a lot of memory - useful for testing small scale
+    /**
+    * \brief Method to fill Quadtree Vertex array.
+    */
     void generateVertices();
+    /**
+    * \brief Method to fill Quadtree Edge array.
+    */
     void generateEdges();
+    /**
+    * \brief Method to fill Quadtree Edge and Vertex arrays.
+    */
     void generateVerticesAndEdges();
 
+    /**
+    * \brief Method to set Quadtree::Node flags based on a hashmap.
+    * \param hashMap Unity struct with bool array representing hashmap
+    * \param requireFullNeighbors if true then border pixels have flag set to false
+    * \param depthRange used to specify depths of quadtree evaluated in method
+    */
     void setNodeFlags(Unity<bool>* hashMap, bool requireFullNeighbors = false, uint2 depthRange = {0,0});
+    /**
+    * \brief Method to set Quadtree::Node flags based on a border.
+    * \param flagBorder border where flags will be set to false
+    * \param requireFullNeighbors if true then border pixels have flag set to false
+    * \param depthRange used to specify depths of quadtree evaluated in method
+    */
     void setNodeFlags(float2 flagBorder, bool requireFullNeighbors = false, uint2 depthRange = {0,0});
 
+    /**
+    * \brief Method to print ply of image with Quadtree<unsigned int>
+    * \param pixels pixels to be shown
+    */
     void writePLY(Unity<unsigned char>* pixels);
     void writePLY();
     void writePLY(Node* nodes_device, unsigned long numNodes);
@@ -108,13 +171,20 @@ namespace jax{
 
   };
 
-  struct is_flagged{
-    template<typename T>
-    __host__ __device__
-    bool operator()(const typename Quadtree<T>::Node& n){
-      return (n.flag);
-    }
-  };
+  /**
+  * \}
+  */
+
+  namespace{
+    struct is_flagged{
+      template<typename T>
+      __host__ __device__
+      bool operator()(const typename Quadtree<T>::Node& n){
+        return (n.flag);
+      }
+    };
+  }
+
 
   /*
   CUDA KERNEL DEFINITIONS

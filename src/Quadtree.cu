@@ -59,6 +59,22 @@ jax::Quadtree<T>::Quadtree(){
   this->border = {0,0};
 }
 
+template<>
+jax::Quadtree<unsigned char>::Quadtree(Image* image, unsigned int depth, int2 border){
+  this->edges = nullptr;
+  this->vertices = nullptr;
+  this->data = image->pixels;
+  this->colorDepth = image->colorDepth;
+  this->border = border;
+  this->size = {image->size.x + (border.x*2),image->size.y + (border.y*2)};
+  this->depth = depth;
+  printf("Building Quadtree with following characteristics:\ndepth = %d",this->depth);
+  printf("\nsize = {%d,%d}\nborder = {%d,%d}\n",this->size.x,this->size.y,this->border.x,this->border.y);
+  this->generateLeafNodes();
+  this->generateParentNodes();
+  this->fillNeighborhoods();
+}
+
 //TODO throw error if depth.x is greater than depth.y
 //specifically for index full quadtree
 template<>
@@ -121,7 +137,7 @@ void jax::Quadtree<T>::generateLeafNodes(){
   unsigned int* nodeDataIndex_device = nullptr;
 
   unsigned long numLeafNodes = 0;
-  numLeafNodes = this->data->numElements;
+  numLeafNodes = this->data->size();
   CudaSafeCall(cudaMalloc((void**)&leafNodeKeys_device, numLeafNodes*sizeof(int)));
   CudaSafeCall(cudaMalloc((void**)&leafNodeCenters_device, numLeafNodes*sizeof(float2)));
   dim3 grid = {1,1,1};
@@ -134,8 +150,10 @@ void jax::Quadtree<T>::generateLeafNodes(){
     CudaCheckError();
   }
   else{
-    grid = {(numLeafNodes/1024) + 1,1,1};
-    block = {1024,1,1};
+    grid = {1,1,1};
+    block = {1,1,1};
+    void (*fp)(int*, float2*, uint2, int2, unsigned int) = &getKeys;
+    getFlatGridBlock(numLeafNodes,grid,block,fp);
     getKeys<<<grid,block>>>(leafNodeKeys_device, leafNodeCenters_device, this->size, this->border, this->depth);
     cudaDeviceSynchronize();
     CudaCheckError();
@@ -143,51 +161,52 @@ void jax::Quadtree<T>::generateLeafNodes(){
 
 
   thrust::counting_iterator<unsigned int> iter(0);
-  thrust::device_vector<unsigned int> indices(this->data->numElements);
-  thrust::copy(iter, iter + this->data->numElements, indices.begin());
+  thrust::device_vector<unsigned int> indices(this->data->size());
+  thrust::copy(iter, iter + this->data->size(), indices.begin());
   CudaSafeCall(cudaMalloc((void**)&nodeDataIndex_device, numLeafNodes*sizeof(unsigned int)));
   CudaSafeCall(cudaMemcpy(nodeDataIndex_device, thrust::raw_pointer_cast(indices.data()), numLeafNodes*sizeof(unsigned int),cudaMemcpyDeviceToDevice));
 
   thrust::device_ptr<int> kys(leafNodeKeys_device);
-  thrust::sort_by_key(kys, kys + this->data->numElements, indices.begin());
+  thrust::sort_by_key(kys, kys + this->data->size(), indices.begin());
 
   thrust::device_ptr<float2> cnts(leafNodeCenters_device);
-  thrust::device_vector<float2> sortedCnts(this->data->numElements);
+  thrust::device_vector<float2> sortedCnts(this->data->size());
   thrust::gather(indices.begin(), indices.end(), cnts, sortedCnts.begin());
-  CudaSafeCall(cudaMemcpy(leafNodeCenters_device, thrust::raw_pointer_cast(sortedCnts.data()), this->data->numElements*sizeof(float2),cudaMemcpyDeviceToDevice));
+  CudaSafeCall(cudaMemcpy(leafNodeCenters_device, thrust::raw_pointer_cast(sortedCnts.data()), this->data->size()*sizeof(float2),cudaMemcpyDeviceToDevice));
 
-  if(this->data->fore != gpu){
+  if(this->data->getFore() != gpu){
     this->data->transferMemoryTo(gpu);
   }
 
   thrust::device_ptr<T> dataSorter(this->data->device);
-  thrust::device_vector<T> sortedData(this->data->numElements);
+  thrust::device_vector<T> sortedData(this->data->size());
   thrust::gather(indices.begin(), indices.end(), dataSorter, sortedData.begin());
   T* data_device = nullptr;
-  CudaSafeCall(cudaMalloc((void**)&data_device,this->data->numElements*sizeof(T)));
-  CudaSafeCall(cudaMemcpy(data_device,thrust::raw_pointer_cast(sortedData.data()), this->data->numElements*sizeof(T), cudaMemcpyDeviceToDevice));
-  this->data->setData(data_device, this->data->numElements, gpu);
+  CudaSafeCall(cudaMalloc((void**)&data_device,this->data->size()*sizeof(T)));
+  CudaSafeCall(cudaMemcpy(data_device,thrust::raw_pointer_cast(sortedData.data()), this->data->size()*sizeof(T), cudaMemcpyDeviceToDevice));
+  this->data->setData(data_device, this->data->size(), gpu);
   this->data->transferMemoryTo(cpu);
   this->data->clear(gpu);
 
   thrust::pair<thrust::device_ptr<int>, thrust::device_ptr<unsigned int>> new_end;//the last value of these node array
   thrust::device_ptr<unsigned int> compactNodeDataIndex(nodeDataIndex_device);
-  new_end = thrust::unique_by_key(kys,kys + this->data->numElements, compactNodeDataIndex);
+  new_end = thrust::unique_by_key(kys,kys + this->data->size(), compactNodeDataIndex);
   numLeafNodes = thrust::get<0>(new_end) - kys;
 
   Node* leafNodes_device = nullptr;
   CudaSafeCall(cudaMalloc((void**)&leafNodes_device, numLeafNodes*sizeof(Node)));
 
-  grid = {(numLeafNodes/1024)+1,1,1};
-  block = {1024,1,1};
+  grid = {1,1,1};
+  block = {1,1,1};
+  getFlatGridBlock(numLeafNodes,grid,block,fillLeafNodes<T>);
 
-  fillLeafNodes<T><<<grid,block>>>(this->data->numElements, numLeafNodes,leafNodes_device,leafNodeKeys_device,leafNodeCenters_device,nodeDataIndex_device,this->depth);
+  fillLeafNodes<T><<<grid,block>>>(this->data->size(), numLeafNodes,leafNodes_device,leafNodeKeys_device,leafNodeCenters_device,nodeDataIndex_device,this->depth);
   cudaDeviceSynchronize();
   CudaCheckError();
 
   this->nodes = new Unity<Node>(leafNodes_device, numLeafNodes, gpu);
 
-  this->nodes->fore = gpu;
+  this->nodes->setFore(gpu);
 
   CudaSafeCall(cudaFree(leafNodeKeys_device));
   CudaSafeCall(cudaFree(leafNodeCenters_device));
@@ -202,17 +221,17 @@ template<typename T>
 void jax::Quadtree<T>::generateParentNodes(){
   clock_t timer = clock();
   std::cout<<"filling coarser depths of quadtree..."<<std::endl;
-  if(this->nodes == nullptr || this->nodes->state == null){
+  if(this->nodes == nullptr || this->nodes->getMemoryState() == null){
     //TODO potentially develop support for bottom up growth
     throw NullUnityException("Cannot generate parent nodes before children");
   }
   Node* uniqueNodes_device;
-  if(this->nodes->state == cpu){
+  if(this->nodes->getMemoryState() == cpu){
     this->nodes->transferMemoryTo(gpu);
   }
-  int numUniqueNodes = this->nodes->numElements;
-  CudaSafeCall(cudaMalloc((void**)&uniqueNodes_device, this->nodes->numElements*sizeof(Node)));
-  CudaSafeCall(cudaMemcpy(uniqueNodes_device, this->nodes->device, this->nodes->numElements*sizeof(Node), cudaMemcpyDeviceToDevice));
+  int numUniqueNodes = this->nodes->size();
+  CudaSafeCall(cudaMalloc((void**)&uniqueNodes_device, this->nodes->size()*sizeof(Node)));
+  CudaSafeCall(cudaMemcpy(uniqueNodes_device, this->nodes->device, this->nodes->size()*sizeof(Node), cudaMemcpyDeviceToDevice));
   delete this->nodes;
   this->nodes = nullptr;
   unsigned int totalNodes = 0;
@@ -227,7 +246,7 @@ void jax::Quadtree<T>::generateParentNodes(){
 
   dim3 grid = {1,1,1};
   dim3 block = {1,1,1};
-  getFlatGridBlock(numUniqueNodes, grid, block);
+  getFlatGridBlock(numUniqueNodes, grid, block,findAllNodes<T>);
 
   for(int d = this->depth; d >= 0; --d){
 
@@ -263,7 +282,7 @@ void jax::Quadtree<T>::generateParentNodes(){
       grid = {1,1,1};
       block = {1,1,1};
       CudaSafeCall(cudaMalloc((void**)&uniqueNodes_device, numUniqueNodes*sizeof(Node)));
-      getFlatGridBlock(numUniqueNodes, grid, block);
+      getFlatGridBlock(numUniqueNodes, grid, block,buildParentalNodes<T>);
       buildParentalNodes<T><<<grid,block>>>(numNodesAtDepth,totalNodes,nodes2D[this->depth - d],uniqueNodes_device,this->size);
       cudaDeviceSynchronize();
       CudaCheckError();
@@ -289,8 +308,8 @@ void jax::Quadtree<T>::generateParentNodes(){
   delete[] nodes2D;
 
   unsigned int* dataNodeIndex_device = nullptr;
-  CudaSafeCall(cudaMalloc((void**)&dataNodeIndex_device, this->data->numElements*sizeof(unsigned int)));
-  this->dataNodeIndex = new Unity<unsigned int>(dataNodeIndex_device, this->data->numElements, gpu);
+  CudaSafeCall(cudaMalloc((void**)&dataNodeIndex_device, this->data->size()*sizeof(unsigned int)));
+  this->dataNodeIndex = new Unity<unsigned int>(dataNodeIndex_device, this->data->size(), gpu);
 
   unsigned int numNodesAtDepth = 1;
   unsigned int depthStartingIndex = 0;
@@ -308,15 +327,15 @@ void jax::Quadtree<T>::generateParentNodes(){
 
   grid = {1,1,1};
   block = {1,1,1};
-  getFlatGridBlock(this->nodeDepthIndex->host[1],grid,block);
+  getFlatGridBlock(this->nodeDepthIndex->host[1],grid,block,fillDataNodeIndex<T>);
   fillDataNodeIndex<T><<<grid,block>>>(this->nodeDepthIndex->host[1],this->nodes->device, this->dataNodeIndex->device);
   cudaDeviceSynchronize();
   CudaCheckError();
   printf("TOTAL NODES = %d\n\n",totalNodes);
   printf("done in %f seconds.\n\n",((float) clock() -  timer)/CLOCKS_PER_SEC);
 
-  this->nodes->fore = gpu;
-  this->dataNodeIndex->fore = gpu;
+  this->nodes->setFore(gpu);
+  this->dataNodeIndex->setFore(gpu);
 }
 
 template<typename T>
@@ -358,7 +377,7 @@ void jax::Quadtree<T>::fillNeighborhoods(){
     cudaDeviceSynchronize();
     CudaCheckError();
   }
-  this->nodes->fore = gpu;//just to ensure that it is known gpu nodes was edited last
+  this->nodes->setFore(gpu);//just to ensure that it is known gpu nodes was edited last
   CudaSafeCall(cudaFree(parentLUT_device));
   CudaSafeCall(cudaFree(childLUT_device));
   std::cout<<"Neighborhoods filled"<<std::endl;
@@ -390,7 +409,7 @@ void jax::Quadtree<T>::generateVertices(){
     grid.y = 1;
     block.x = 4;
     if(i == this->depth){//WARNING MAY CAUSE ISSUE
-      numNodesAtDepth = this->nodes->numElements - this->nodeDepthIndex->host[this->depth];
+      numNodesAtDepth = this->nodes->size() - this->nodeDepthIndex->host[this->depth];
     }
     else{
       numNodesAtDepth = this->nodeDepthIndex->host[i + 1] - this->nodeDepthIndex->host[i];
@@ -576,17 +595,17 @@ void jax::Quadtree<T>::generateVerticesAndEdges(){
 
 template<typename T>
 void jax::Quadtree<T>::setNodeFlags(jax::Unity<bool>* hashMap, bool requireFullNeighbors, uint2 depthRange){
-  if(hashMap == nullptr || hashMap->state == null){
+  if(hashMap == nullptr || hashMap->getMemoryState() == null){
     throw NullUnityException("hashMap must be filled before setFlags is called");
   }
   if(!(depthRange.x == 0 && depthRange.y == 0) && (depthRange.x > depthRange.y || depthRange.x > this->depth || this->depth > depthRange.y || this->depth < depthRange.x)){
     std::cout<<"ERROR: invalid depthRange in setFlags"<<std::endl;
     exit(-1);
   }
-  MemoryState origin[3] = {hashMap->state,this->nodes->state,this->nodeDepthIndex->state};
-  if(hashMap->fore == cpu) hashMap->transferMemoryTo(gpu);
-  if(this->nodes->fore == cpu) this->nodes->transferMemoryTo(gpu);
-  if(this->nodeDepthIndex->fore == gpu) this->nodeDepthIndex->transferMemoryTo(cpu);
+  MemoryState origin[3] = {hashMap->getMemoryState(),this->nodes->getMemoryState(),this->nodeDepthIndex->getMemoryState()};
+  if(hashMap->getFore() == cpu) hashMap->transferMemoryTo(gpu);
+  if(this->nodes->getFore() == cpu) this->nodes->transferMemoryTo(gpu);
+  if(this->nodeDepthIndex->getFore() == gpu) this->nodeDepthIndex->transferMemoryTo(cpu);
 
   unsigned int nodeDepthIndex = 0;
   if(depthRange.y == 0){
@@ -597,7 +616,7 @@ void jax::Quadtree<T>::setNodeFlags(jax::Unity<bool>* hashMap, bool requireFullN
   }
   unsigned int numNodes = 0;
   if(depthRange.x == 0){
-    numNodes = this->nodes->numElements - nodeDepthIndex;
+    numNodes = this->nodes->size() - nodeDepthIndex;
   }
   else{
     numNodes = this->nodeDepthIndex->host[this->depth - (depthRange.x - 1)] - nodeDepthIndex;
@@ -605,20 +624,20 @@ void jax::Quadtree<T>::setNodeFlags(jax::Unity<bool>* hashMap, bool requireFullN
 
   dim3 grid = {1,1,1};
   dim3 block = {1,1,1};
-  getFlatGridBlock(numNodes, grid, block);
-
+  void (*fp)(unsigned int, unsigned int, typename Quadtree<T>::Node*, bool*, bool) = &applyNodeFlags<T>;
+  getFlatGridBlock(numNodes, grid, block,fp);
   applyNodeFlags<T><<<grid,block>>>(numNodes,nodeDepthIndex,this->nodes->device,hashMap->device,requireFullNeighbors);
   cudaDeviceSynchronize();
   CudaCheckError();
 
-  if(origin[0] != hashMap->state){
+  if(origin[0] != hashMap->getMemoryState()){
     hashMap->setMemoryState(origin[0]);
   }
-  this->nodes->fore = gpu;//due to editing nodes in this method
-  if(origin[1] != this->nodes->state){
+  this->nodes->setFore(gpu);//due to editing nodes in this method
+  if(origin[1] != this->nodes->getMemoryState()){
     this->nodes->setMemoryState(origin[1]);
   }
-  if(origin[2] != this->nodeDepthIndex->state){
+  if(origin[2] != this->nodeDepthIndex->getMemoryState()){
     this->nodeDepthIndex->setMemoryState(origin[2]);
   }
 }
@@ -629,9 +648,9 @@ void jax::Quadtree<T>::setNodeFlags(float2 flagBorder, bool requireFullNeighbors
     std::cout<<"ERROR: invalid depthRange in setFlags"<<std::endl;
     exit(-1);
   }
-  MemoryState origin[2] = {this->nodes->state,this->nodeDepthIndex->state};
-  if(this->nodes->fore == cpu) this->nodes->transferMemoryTo(gpu);
-  if(this->nodeDepthIndex->fore == gpu) this->nodeDepthIndex->transferMemoryTo(cpu);
+  MemoryState origin[2] = {this->nodes->getMemoryState(),this->nodeDepthIndex->getMemoryState()};
+  if(this->nodes->getFore() == cpu) this->nodes->transferMemoryTo(gpu);
+  if(this->nodeDepthIndex->getFore() == gpu) this->nodeDepthIndex->transferMemoryTo(cpu);
 
   unsigned int nodeDepthIndex = 0;
   if(depthRange.y == 0){
@@ -642,7 +661,7 @@ void jax::Quadtree<T>::setNodeFlags(float2 flagBorder, bool requireFullNeighbors
   }
   unsigned int numNodes = 0;
   if(depthRange.x == 0){
-    numNodes = this->nodes->numElements - nodeDepthIndex;
+    numNodes = this->nodes->size() - nodeDepthIndex;
   }
   else{
     numNodes = this->nodeDepthIndex->host[this->depth - (depthRange.x - 1)] - nodeDepthIndex;
@@ -650,7 +669,8 @@ void jax::Quadtree<T>::setNodeFlags(float2 flagBorder, bool requireFullNeighbors
 
   dim3 grid = {1,1,1};
   dim3 block = {1,1,1};
-  getFlatGridBlock(numNodes, grid, block);
+  void (*fp)(unsigned int, unsigned int, typename Quadtree<T>::Node*, float4, bool) = &applyNodeFlags<T>;
+  getFlatGridBlock(numNodes, grid, block,fp);
 
   printf("Setting node flags based on distance from edge = {%f,%f} ",flagBorder.x,flagBorder.y);
   if(requireFullNeighbors)printf("while also requiring full neighbors");
@@ -661,11 +681,11 @@ void jax::Quadtree<T>::setNodeFlags(float2 flagBorder, bool requireFullNeighbors
   cudaDeviceSynchronize();
   CudaCheckError();
 
-  this->nodes->fore = gpu;//due to editing nodes in this method
-  if(origin[0] != this->nodes->state){
+  this->nodes->setFore(gpu);//due to editing nodes in this method
+  if(origin[0] != this->nodes->getMemoryState()){
     this->nodes->setMemoryState(origin[0]);
   }
-  if(origin[1] != this->nodeDepthIndex->state){
+  if(origin[1] != this->nodeDepthIndex->getMemoryState()){
     this->nodeDepthIndex->setMemoryState(origin[1]);
   }
 }
@@ -676,7 +696,7 @@ void jax::Quadtree<T>::writePLY(){
   std::cout<<"writing "<<newFile<<std::endl;
   std::ofstream plystream(newFile);
   if (plystream.is_open()) {
-    int verticesToWrite = this->nodes->numElements;
+    int verticesToWrite = this->nodes->size();
     this->nodes->transferMemoryTo(cpu);
     std::ostringstream stringBuffer = std::ostringstream("");
     stringBuffer << "ply\nformat ascii 1.0\ncomment object: SSRL test\n";
@@ -713,7 +733,7 @@ void jax::Quadtree<unsigned char>::writePLY(){
 std::string newFile = "out/test_"+ std::to_string(rand())+ ".ply";
 std::ofstream plystream(newFile);
 if (plystream.is_open()) {
-  int verticesToWrite = this->nodes->numElements;
+  int verticesToWrite = this->nodes->size();
   this->nodes->transferMemoryTo(cpu);
   this->data->transferMemoryTo(cpu);
   std::ostringstream stringBuffer = std::ostringstream("");
@@ -768,7 +788,7 @@ void jax::Quadtree<unsigned int>::writePLY(jax::Unity<unsigned char>* pixels){
   std::string newFile = "out/test_"+ std::to_string(rand())+ ".ply";
   std::ofstream plystream(newFile);
   if (plystream.is_open()) {
-    int verticesToWrite = this->nodes->numElements;
+    int verticesToWrite = this->nodes->size();
     this->nodes->transferMemoryTo(cpu);
     pixels->transferMemoryTo(cpu);
     this->data->transferMemoryTo(cpu);

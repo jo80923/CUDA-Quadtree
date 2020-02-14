@@ -1,305 +1,63 @@
 #include "cuda_util.cuh"
 
-#include "cuda_runtime.h"
-#include "device_launch_parameters.h"
-#include <cuda.h>
-#include <stdio.h>
-#include <iostream>
-
 /*
-NOTE cannot use device inline statements (nvcc link issue)
+NVIDIA GPU COMPATIBILITY
 */
-
-//TODO do this for all vector types and related type operations
-/*
-u&char1,2,3,4
-u&short1,2,3,4
-u&int1,2,3,4
-u&long1,2,3,4
-u&longlong1,2,3,4
-float1,2,3,4
-double1,2,3,4
-*/
-__device__ __host__ void printBits(size_t const size, void const * const ptr){
-  unsigned char *b = (unsigned char*) ptr;
-  unsigned char byte;
-  int i, j;
-  printf("bits - ");
-  for (i=size-1;i>=0;i--){
-    for (j=7;j>=0;j--){
-      byte = (b[i] >> j) & 1;
-      printf("%u", byte);
-    }
-  }
-  printf("\n");
-}
-
-__device__ __host__ float3 operator+(const float3 &a, const float3 &b) {
-  return {a.x+b.x, a.y+b.y, a.z+b.z};
-}
-__device__ __host__ float3 operator-(const float3 &a, const float3 &b) {
-  return {a.x-b.x, a.y-b.y, a.z-b.z};
-}
-__device__ __host__ float3 operator/(const float3 &a, const float3 &b) {
-  return {a.x/b.x, a.y/b.y, a.z/b.z};
-}
-__device__ __host__ float3 operator*(const float3 &a, const float3 &b) {
-  return {a.x*b.x, a.y*b.y, a.z*b.z};
-}
-__device__ __host__ float dotProduct(const float3 &a, const float3 &b){
-  return (a.x*b.x) + (a.y*b.y) + (a.z*b.z);
-}
-__device__ __host__ float3 operator+(const float3 &a, const float &b){
-  return {a.x+b, a.y+b, a.z+b};
-}
-__device__ __host__ float3 operator-(const float3 &a, const float &b){
-  return {a.x-b, a.y-b, a.z-b};
-}
-__device__ __host__ float3 operator/(const float3 &a, const float &b){
-  return {a.x/b, a.y/b, a.z/b};
-}
-__device__ __host__ float3 operator*(const float3 &a, const float &b){
-  return {a.x*b, a.y*b, a.z*b};
-}
-__device__ __host__ float3 operator+(const float &a, const float3 &b) {
-  return {a+b.x, a+b.y, a+b.z};
-}
-__device__ __host__ float3 operator-(const float &a, const float3 &b) {
-  return {a-b.x, a-b.y, a-b.z};
-}
-__device__ __host__ float3 operator/(const float &a, const float3 &b) {
-  return {a/b.x, a/b.y, a/b.z};
-}
-__device__ __host__ float3 operator*(const float &a, const float3 &b) {
-  return {a*b.x, a*b.y, a*b.z};
-}
-__device__ __host__ bool operator==(const float3 &a, const float3 &b){
-  return (a.x==b.x)&&(a.y==b.y)&&(a.z==b.z);
-}
-
-__device__ __host__ float2 operator+(const float2 &a, const float2 &b){
-  return {a.x + b.x, a.y + b.y};
-}
-__device__ __host__ float2 operator-(const float2 &a, const float2 &b){
-  return {a.x - b.x, a.y - b.y};
-}
-__device__ __host__ float2 operator/(const float2 &a, const float2 &b){
-  return {a.x / b.x, a.y / b.y};
-}
-__device__ __host__ float2 operator*(const float2 &a, const float2 &b){
-  return {a.x * b.x, a.y * b.y};
-}
-__device__ __host__ float dotProduct(const float2 &a, const float2 &b){
-  return (a.x*b.x) + (a.y*b.y);
-}
-__device__ __host__ float2 operator+(const float2 &a, const float &b){
-  return {a.x + b, a.y + b};
-}
-__device__ __host__ float2 operator-(const float2 &a, const float &b){
-  return {a.x - b, a.y - b};
-}
-__device__ __host__ float2 operator/(const float2 &a, const float &b){
-  return {a.x / b, a.y / b};
-}
-__device__ __host__ float2 operator*(const float2 &a, const float &b){
-  return {a.x * b, a.y * b};
-}
-__device__ __host__ float2 operator+(const float &a, const float2 &b){
-  return {a + b.x, a + b.y};
-}
-__device__ __host__ float2 operator-(const float &a, const float2 &b){
-  return {a - b.x, a - b.y};
-}
-__device__ __host__ float2 operator/(const float &a, const float2 &b){
-  return {a / b.x, a / b.y};
-}
-__device__ __host__ float2 operator*(const float &a, const float2 &b){
-  return {a * b.x, a * b.y};
-}
-__device__ __host__ bool operator==(const float2 &a, const float2 &b){
-  return a.x == b.x && a.y == b.y;
-}
-
-__device__ __host__ float2 operator+(const float2 &a, const int2 &b){
-  return {a.x + ((float) b.x), a.y + ((float) b.y)};
-}
-__device__ __host__ float2 operator-(const float2 &a, const int2 &b){
-  return {a.x - ((float) b.x), a.y - ((float) b.y)};
-}
-__device__ __host__ float2 operator/(const float2 &a, const int2 &b){
-  return {a.x / ((float) b.x), a.y / ((float) b.y)};
-}
-__device__ __host__ float2 operator*(const float2 &a, const int2 &b){
-  return {a.x * ((float) b.x), a.y * ((float) b.y)};
-}
-__device__ __host__ float2 operator+(const int2 &a, const float2 &b){
-  return {((float) a.x) + b.x, ((float) a.y) + b.y};
-}
-__device__ __host__ float2 operator-(const int2 &a, const float2 &b){
-  return {((float) a.x) - b.x, ((float) a.y) - b.y};
-}
-__device__ __host__ float2 operator/(const int2 &a, const float2 &b){
-  return {((float) a.x) / b.x, ((float) a.y) / b.y};
-}
-__device__ __host__ float2 operator*(const int2 &a, const float2 &b){
-  return {(float) a.x * b.x, ((float) a.y) * b.y};
-}
-
-__device__ __host__ int2 operator+(const int2 &a, const int2 &b){
-  return {a.x + b.x, a.y + b.y};
-}
-__device__ __host__ int2 operator-(const int2 &a, const int2 &b){
-  return {a.x - b.x, a.y - b.y};
-}
-__device__ __host__ float2 operator/(const int2 &a, const int2 &b){
-  return {((float) a.x) / ((float) b.x), ((float) a.y) / ((float) b.y)};
-}
-__device__ __host__ int2 operator*(const int2 &a, const int2 &b){
-  return {a.x * b.x, a.y * b.y};
-}
-__device__ __host__ int dotProduct(const int2 &a, const int2 &b){
-  return (a.x*b.x) + (a.y*b.y);
-}
-__device__ __host__ float2 operator/(const int2 &a, const float &b){
-  return {((float)a.x)/b, ((float)a.y)/b};
-}
-__device__ __host__ float2 operator+(const int2 &a, const float &b){
-  return {((float)a.x) + b, ((float)a.y) + b};
-}
-__device__ __host__ float2 operator-(const int2 &a, const float &b){
-  return {((float)a.x) - b, ((float)a.y) - b};
-}
-
-__device__ __host__ uint2 operator+(const uint2 &a, const uint2 &b){
-  return {a.x + b.x, a.y + b.y};
-}
-__device__ __host__ uint2 operator-(const uint2 &a, const uint2 &b){
-  return {a.x - b.x, a.y - b.y};
-}
-__device__ __host__ uint2 operator*(const uint2 &a, const uint2 &b){
-  return {a.x * b.x, a.y * b.y};
-}
-__device__ __host__ uint2 operator/(const uint2 &a, const uint2 &b){
-  return {a.x / b.x, a.y / b.y};
-}
-__device__ __host__ int2 operator+(const int2 &a, const uint2 &b){
-  return {a.x + b.x, a.y + b.y};
-}
-__device__ __host__ int2 operator-(const int2 &a, const uint2 &b){
-  return {a.x - b.x, a.y - b.y};
-}
-__device__ __host__ int2 operator*(const int2 &a, const uint2 &b){
-  return {a.x * b.x, a.y * b.y};
-}
-__device__ __host__ int2 operator/(const int2 &a, const uint2 &b){
-  return {a.x / b.x, a.y / b.y};
-}
-__device__ __host__ int2 operator+(const uint2 &a, const int2 &b){
-  return {a.x + b.x, a.y + b.y};
-}
-__device__ __host__ int2 operator-(const uint2 &a, const int2 &b){
-  return {a.x - b.x, a.y - b.y};
-}
-__device__ __host__ int2 operator*(const uint2 &a, const int2 &b){
-  return {a.x * b.x, a.y * b.y};
-}
-__device__ __host__ int2 operator/(const uint2 &a, const int2 &b){
-  return {a.x / b.x, a.y / b.y};
-}
-
-
-
-
-
-__device__ __host__ ulong2 operator+(const ulong2 &a, const int2 &b){
-  return {a.x + (unsigned long)b.x, a.y + (unsigned long)b.y};
-}
-__device__ __host__ ulong2 operator-(const ulong2 &a, const int2 &b){
-  return  {a.x - (unsigned long)b.x, a.y - (unsigned long)b.y};
-}
-__device__ __host__ ulong2 operator*(const ulong2 &a, const int2 &b){
-  return  {a.x * (unsigned long)b.x, a.y * (unsigned long)b.y};
-}
-
-__device__ __host__ ulong2 operator+(const int2 &a, const ulong2 &b){
-  return {(unsigned long)a.x + b.x, (unsigned long)a.y + b.y};
-}
-__device__ __host__ ulong2 operator-(const int2 &a, const ulong2 &b){
-  return {(unsigned long)a.x - b.x, (unsigned long)a.y - b.y};
-}
-__device__ __host__ ulong2 operator*(const int2 &a, const ulong2 &b){
-  return {(unsigned long)a.x * b.x, (unsigned long)a.y * b.y};
-}
-
-__device__ __host__ float2 operator*(const int2 &a, const float &b){
-  return {((float)a.x) * b, ((float)a.y) * b};
-}
-
-__device__ __host__ bool operator>(const float2 &a, const float &b){
-  return (a.x > b) && (a.y > b);
-}
-
-__device__ __host__ bool operator<(const float2 &a, const float &b){
-  return (a.x < b) && (a.y < b);
-}
-
-__device__ __host__ bool operator>(const float2 &a, const float2 &b){
-  return (a.x > b.x) && (a.y > b.y);
-}
-
-__device__ __host__ bool operator<(const float2 &a, const float2 &b){
-  return (a.x < b.x) && (a.y < b.y);
-}
-
-__device__ __host__ bool operator>(const float2 &a, const int2 &b){
-  return (a.x > b.x) && (a.y > b.y);
-}
-
-__device__ __host__ bool operator<(const float2 &a, const int2 &b){
-  return (a.x < b.x) && (a.y < b.y);
-}
-
-
-
-
-void max_occupancy(dim3 &grid, dim3 &block, const int &gridDim, const int &blockDim, const uint3 &forceBlock, const long &valueToAchieve){
-
-}
-
-void getFlatGridBlock(unsigned long size, dim3 &grid, dim3 &block) {
-  if(2147483647 > size){
-    grid.x = size;
-  }
-  else if((unsigned long) 2147483647 * 1024 > size){
-    grid.x = 2147483647;
-    block.x = 1024;
-    while(block.x * grid.x > size){
-      block.x--;
-    }
-    block.x++;
+void getGrid(unsigned long numElements, dim3 &grid, int device){
+  cudaDeviceProp prop;
+  cudaGetDeviceProperties(&prop, device);
+    
+  grid = {(unsigned int)prop.maxGridSize[0],(unsigned int)prop.maxGridSize[1],(unsigned int)prop.maxGridSize[2]};
+  if(numElements < grid.x){
+    grid.x = numElements;
+    grid.y = 1;
+    grid.z = 1;
   }
   else{
-    grid.x = 65535;
-    block.x = 1024;
-    grid.y = 1;
-    while(grid.x * grid.y * block.x < size){
+    grid.x = 65536;
+    if(numElements < grid.x*grid.y){
+      grid.y = numElements/grid.x;
       grid.y++;
+      grid.z = 1;
+    }
+    else if(numElements < grid.x*grid.y*grid.z){
+      grid.z = numElements/(grid.x*grid.y);
+      grid.z++;
     }
   }
 }
-void getGrid(unsigned long size, dim3 &grid) {
-  if(2147483647 > size){
-    grid.x = size;
+void checkDims(dim3 grid, dim3 block, int device){
+  cudaDeviceProp prop;
+  cudaGetDeviceProperties(&prop, device);
+  bool goodDims = true;
+  if(grid.x > prop.maxGridSize[0]){
+    goodDims = false;
   }
-  else{
-    grid.x = 65535;
-    grid.y = 1;
-    while(grid.x * grid.y * grid.y < size){
-      grid.y++;
-    }
+  else if(grid.y > prop.maxGridSize[1]){
+    goodDims = false;
+  }
+  else if(grid.z > prop.maxGridSize[2]){
+    goodDims = false;
+  }
+  else if(block.x > prop.maxThreadsDim[0]){
+    goodDims = false;
+  }
+  else if(block.y > prop.maxThreadsDim[1]){
+    goodDims = false;
+  }
+  else if(block.z > prop.maxThreadsDim[2]){
+    goodDims = false;
+  }
+  else if(block.x*block.y*block.z > prop.maxThreadsPerBlock){
+    goodDims = false;
+  }
+  if(!goodDims){
+    std::cerr<<"ERROR: grid or block dims are invalid for given device"<<std::endl;
+    exit(-1);
+    //TODO replace with exception and make more specific
+    //maybe make macro like CudaSafeCall()
   }
 }
-
 __host__ void cusolverCheckError(cusolverStatus_t cusolver_status){
   switch (cusolver_status){
       case CUSOLVER_STATUS_SUCCESS:
@@ -335,7 +93,6 @@ __host__ void cusolverCheckError(cusolverStatus_t cusolver_status){
           exit(-1);
   }
 }
-
 //prints tx2 info relevant to cuda devlopment
 //citation: this method comes from the nvidia formums, and has been modified slightly
 void printDeviceProperties(){
@@ -362,9 +119,10 @@ void printDeviceProperties(){
     printf("  -Max number of blocks: %dx%dx%d\n",prop.maxGridSize[0], prop.maxGridSize[1], prop.maxGridSize[2]);
     printf("  -32bit Registers per block: %d\n", prop.regsPerBlock);
     printf("  -Threads per warp: %d\n\n", prop.warpSize);
+    printf("  -Max Threads per Multiprocessor: %d\n", prop.maxThreadsPerMultiProcessor);
     printf("  -Total number of Multiprocessors: %d\n",prop.multiProcessorCount);
     printf("  -Shared Memory per Multiprocessor (bytes): %lo\n",prop.sharedMemPerMultiprocessor);
-    printf("  -32bit Registers per Multiprocessor: %d\n\n", prop.regsPerMultiprocessor);
+    printf("  -32bit Registers per Multiprocessor: %d\n", prop.regsPerMultiprocessor);
     printf("  -Number of asynchronous engines: %d\n", prop.asyncEngineCount);
     printf("  -Texture alignment requirement (bytes): %lo\n  -Texture base addresses that are aligned to "
     "textureAlignment bytes do not need an offset applied to texture fetches.\n\n", prop.textureAlignment);
@@ -448,4 +206,21 @@ void printDeviceProperties(){
     }
   }
   std::cout<<"\n----------------END OF DEVICE PROPERTIES----------------\n"<<std::endl;
+}
+
+/*
+SIMPLE CUDA METHODS
+*/
+__device__ __host__ void printBits(size_t const size, void const * const ptr){
+  unsigned char *b = (unsigned char*) ptr;
+  unsigned char byte;
+  int i, j;
+  printf("bits - ");
+  for (i=size-1;i>=0;i--){
+    for (j=7;j>=0;j--){
+      byte = (b[i] >> j) & 1;
+      printf("%u", byte);
+    }
+  }
+  printf("\n");
 }
